@@ -80,7 +80,8 @@ fn main() {
             (*interface_ptr).dwNumberOfItems as usize)
     };
 
-    for interface_info in interface_list{ // Iterate over the interface list
+    //Iterating over the interface list
+    for interface_info in interface_list{ /
         let interface_description = match parse_utf16_slice(interface_info.strInterfaceDescription.as_slice()){ // Parse the interface description
             Some(name) => name,
             None => {
@@ -90,12 +91,30 @@ fn main() {
         };
 
         //For every interface we get the profile list
-        let profile_list_ptr = match get_profile_list(wlan_handle, &interface_info.InterfaceGuid){
+        let wlan_profile_ptr = match get_profile_list(wlan_handle, &interface_info.InterfaceGuid){
             Ok(ptr) => ptr,
             Err(e) => {
                 eprintln!("Failed to get profile list: {:?}", e);
                 continue;
             }
         };
+
+        //Extracting the profile list
+        let wlan_profile_list = unsafe{
+            std::slice::from_raw_parts(
+                (*wlan_profile_ptr).ProfileInfo.as_ptr(),
+                (*wlan_profile_ptr).dwNumberOfItems as usize)
+        };
+
+        //Iterating over the profile list
+        for profile in wlan_profile_list{
+            let profile_name = match parse_utf16_slice(profile.strProfileName.as_slice()){ // Parse the profile name
+                Some(name) => name,
+                None => {
+                    eprintln!("Failed to parse profile name");
+                    continue;
+                }
+            };
+        }
     }
 }
