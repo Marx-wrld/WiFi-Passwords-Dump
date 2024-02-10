@@ -3,6 +3,7 @@ use std::os::windows::ffi::OsStringExt;
 
 use windows::{
     core::{GUID, HSTRING, PCWSTR, PWSTR},
+    Data::Xml::Dom::{XmlDocument, XmlElement},
     Win32::{
         Foundation::{ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, WIN32_ERROR},
         NetworkManagement::WiFi::{
@@ -54,9 +55,69 @@ fn get_profile_list(wlan_handle: HANDLE, interface_guid: &GUID) -> Result<*const
 
 // Function to parse a UTF-16 slice into an OsString
 fn parse_utf16_slice(string_slice: &[u16]) -> Option<OsString>{
-    let null_index = string_slice.iter().position(|c| c == 0)?; // Find the null terminator
+    let null_index = string_slice.iter().position(|c| c == &0)?; // Find the null terminator in the slice
 
     Some(OsString::from_wide(&string_slice[..null_index])) // Convert the slice to an OsString
+}
+
+// Function to load XML data from windows into an XmlDocument
+fn load_xml_data(xml: &OsString) -> Result<XmlDocument, windows::core::Error>{ //
+    let xml_document = XmlDocument::new()?;
+    xml_document.LoadXml(&HSTRING::from(xml))?; // Load the XML data into the XmlDocument
+    Ok(xml_document)
+}
+
+// Parsing the XML tree
+fn traverse_xml_tree(xml: &XmlElement, node_path: &[&str]) -> Option<String> { // Function to traverse the XML tree
+    let mut subtree_list = xml.childNodes().ok?; // Get the list of child nodes
+    let last_node_name = node_path.last()?; // Get the last node name
+
+    'node_traverse: for node in node_path{ // Iterate over the node path
+        let node_name = OsString::from_wide(&node.encode_utf16().collect::<Vec<u16>>()); // Convert the node name to a wide string
+
+        for subtree_value in &subtree_list{ // Iterate over the subtree list
+            let element_name = match subtree_value.NodeName(){ // Get the name of the element
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+
+            if element_name.to_os_string() == node_name{ // Check if the element name matches the node name
+                if element_name.to_os_string().to_string_lossy.to_string() == last_node_name.to_string(){ // Check if the element name matches the last node name
+                    return Some(subtree_value.InnerText().ok()?.to_string()); // Return the inner text of the element
+                }
+
+                subtree_list = subtree_value.childNodes().ok()?;
+                continue 'node_traverse;
+            }
+        }
+    }
+    None
+}
+
+//Curving out the data in XML profile
+fn get_profile_xml( // Function to get the profile XML
+    handle: HANDLE,
+    interface_guid: &GUID,
+    profile_name: &OsString,
+) -> Result<OsString, windows::core::Error>{
+    let mut profile_xml_data = PWSTR::null(); // Pointer to the profile XML
+    let mut profile_xml_flags = WLAN_PROFILE_GET_PLAINTEXT_KEY; // Flags for the profile XML
+    let result = unsafe { // Call the WlanGetProfile function
+        WlanGetProfile(handle, interface_guid, PCWSTR(HSTRING::from(profile_name).as_ptr(),
+        ), None, &mut profile_xml_data, Some(&mut profile_xml_flags), None)
+    };
+
+    WIN32_ERROR(result).ok()?; // Convert the result to a Result type
+
+    let xml_string = match unsafe { profile_xml_data.to_hstring() }{ // Convert the profile XML to an HSTRING
+        Ok(data) => data,
+        Err(_) => {
+            unsafe { WlanFreeMemory(profile_xml_data.as_ptr().cast()) }; // Free the memory
+            return Err(windows::core::Error::from(ERROR_SUCCESS)); // Return an error
+        }
+    };
+
+    Ok(xml_string.to_os_string()); // Return the profile XML as an OsString
 }
 
 fn main() {
@@ -81,7 +142,7 @@ fn main() {
     };
 
     //Iterating over the interface list
-    for interface_info in interface_list{ /
+    for interface_info in interface_list{
         let interface_description = match parse_utf16_slice(interface_info.strInterfaceDescription.as_slice()){ // Parse the interface description
             Some(name) => name,
             None => {
@@ -115,6 +176,8 @@ fn main() {
                     continue;
                 }
             };
+
+            //Windows isn't going to store your Wi-Fi passwords in a protected or encrypted manner, it will store them in plain text(XML) format
         }
     }
 }
