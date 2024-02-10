@@ -1,3 +1,6 @@
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
+
 use windows::{
     core::{GUID, HSTRING, PCWSTR, PWSTR},
     Win32::{
@@ -48,6 +51,14 @@ fn get_profile_list(wlan_handle: HANDLE, interface_guid: &GUID) -> Result<*const
     Ok(profile_list_ptr) // Return the pointer to the profile list
 }
 
+
+// Function to parse a UTF-16 slice into an OsString
+fn parse_utf16_slice(string_slice: &[u16]) -> Option<OsString>{
+    let null_index = string_slice.iter().position(|c| c == 0)?; // Find the null terminator
+
+    Some(OsString::from_wide(&string_slice[..null_index])) // Convert the slice to an OsString
+}
+
 fn main() {
     //Getting the wlan handle
     let wlan_handle = open_wlan_handle(WLAN_API_VERSION_2_0).expect("Failed to open WLAN handle");
@@ -61,4 +72,30 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    //Extracting the interface list
+    let interface_list = unsafe{
+        std::slice::from_raw_parts(
+            (*interface_ptr).InterfaceInfo.as_ptr(),
+            (*interface_ptr).dwNumberOfItems as usize)
+    };
+
+    for interface_info in interface_list{ // Iterate over the interface list
+        let interface_description = match parse_utf16_slice(interface_info.strInterfaceDescription.as_slice()){ // Parse the interface description
+            Some(name) => name,
+            None => {
+                eprintln!("Failed to parse interface description");
+                continue;
+            }
+        };
+
+        //For every interface we get the profile list
+        let profile_list_ptr = match get_profile_list(wlan_handle, &interface_info.InterfaceGuid){
+            Ok(ptr) => ptr,
+            Err(e) => {
+                eprintln!("Failed to get profile list: {:?}", e);
+                continue;
+            }
+        };
+    }
 }
