@@ -69,7 +69,7 @@ fn load_xml_data(xml: &OsString) -> Result<XmlDocument, windows::core::Error>{ /
 
 // Parsing the XML tree
 fn traverse_xml_tree(xml: &XmlElement, node_path: &[&str]) -> Option<String> { // Function to traverse the XML tree
-    let mut subtree_list = xml.childNodes().ok?; // Get the list of child nodes
+    let mut subtree_list = xml.ChildNodes().ok()?; // Get the list of child nodes
     let last_node_name = node_path.last()?; // Get the last node name
 
     'node_traverse: for node in node_path{ // Iterate over the node path
@@ -82,11 +82,11 @@ fn traverse_xml_tree(xml: &XmlElement, node_path: &[&str]) -> Option<String> { /
             };
 
             if element_name.to_os_string() == node_name{ // Check if the element name matches the node name
-                if element_name.to_os_string().to_string_lossy.to_string() == last_node_name.to_string(){ // Check if the element name matches the last node name
+                if element_name.to_os_string().to_string_lossy().to_string() == last_node_name.to_string(){ // Check if the element name matches the last node name
                     return Some(subtree_value.InnerText().ok()?.to_string()); // Return the inner text of the element
                 }
 
-                subtree_list = subtree_value.childNodes().ok()?;
+                subtree_list = subtree_value.ChildNodes().ok()?;
                 continue 'node_traverse;
             }
         }
@@ -117,7 +117,7 @@ fn get_profile_xml( // Function to get the profile XML
         }
     };
 
-    Ok(xml_string.to_os_string()); // Return the profile XML as an OsString
+    Ok(xml_string.to_os_string()) // Return the profile XML as an OsString
 }
 
 fn main() {
@@ -178,6 +178,67 @@ fn main() {
             };
 
             //Windows isn't going to store your Wi-Fi passwords in a protected or encrypted manner, it will store them in plain text(XML) format
+            //Extracting the profile XML
+            let profile_xml_data = match get_profile_xml(wlan_handle, &interface_info.InterfaceGuid, &profile_name){
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("Failed to get profile XML: {:?}", e);
+                    continue;
+                }
+            };
+
+            //Curving out the XML data
+            let xml_document = match load_xml_data(&profile_xml_data){
+                Ok(xml) => xml,
+                Err(e) => {
+                    eprintln!("Failed to load XML data: {:?}", e);
+                    continue;
+                }
+            };
+
+            //Grabbing the root element of the XML
+            let root = match xml_document.DocumentElement(){
+                Ok(root) => root,
+                Err(e) => {
+                    eprintln!("Failed to get root element for profile XML: {:?}", e);
+                    continue;
+                }
+            };
+
+            //Digging out the security mechanism of the Wi-Fi profile and the password of the Wi-Fi network
+            let auth_type = match traverse_xml_tree(&root, &["MSM", "security", "authEncryption", "authentication"]){
+                Some(key) => key,
+                None => {
+                    eprintln!("Failed to get security key for profile: {:?}", profile_name);
+                    continue;
+                }
+            };
+
+
+            match auth_type.as_str(){ // Match the authentication type
+                "open" => { // If the authentication type is open
+                    println!("Wi-Fi network: {}, No password", profile_name.to_string_lossy().to_string());
+                },
+                "WPA2" | "WPA2PSK" => { // If the authentication type is WPA2 or WPA2PSK
+                    if let Some(password) = traverse_xml_tree(&root, &["MSM", "security", "sharedKey", "keyMaterial"]){ // Get the password
+                        println!(
+                            "Wi-Fi network: {}, Authentication: {}, Password: {}",
+                            profile_name.to_string_lossy().to_string(),
+                            auth_type,
+                            password
+                        );
+                }
+                },
+                _ => { // If the authentication type is not open or WPA2
+                    println!(
+                        "Wi-Fi network: {}, Authentication: {}",
+                        profile_name.to_string_lossy().to_string(),
+                        auth_type
+                    );
+                }
+            }
         }
     }
+
+    unsafe { WlanFreeMemory(interface_ptr.cast()) }; // Free the memory
 }
